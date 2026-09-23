@@ -16,44 +16,40 @@ public class Integral {
     public static double func(double x){ // подынтегральная функция
         return Math.sin(x*x) - 2;
     }
-    public static Thread taskThread(int n, int[] schedule, int[] results){
+    public static Thread taskThread(int n, int[] schedule, double[] items, double[] results){
         return new Thread(()-> {
             var start = schedule[n];
             var finish = schedule[n] + ITEMS_PER_THREAD;
             var acc = 0;
             for (int i = start; i < finish; i++) {
-                double x = A + i * H;
-                double y = func(x);
-                acc += y;
+                acc += items[i];
             }
             results[n] = acc;
         });
     }
-    public static Thread taskMonitorThread(int n, int[] schedule, Acc acc){
+
+    public static Thread taskMonitorThread(int n, int[] schedule, double[] items, Acc acc){
         return new Thread(()-> {
             var start = schedule[n];
             var finish = schedule[n] + ITEMS_PER_THREAD;
             for (int i = start; i < finish; i++) {
-                double x = A + i * H;
-                double y = func(x);
-                acc.addToAcc(y); // захват монитора, только при изменении суммы
-            }
-        });
-    }
-    // Atomic-вариант реализован с помощью DoubleAdder
-    public static Thread taskAtomicThread(int n, int[] schedule, DoubleAdder acc){
-        return new Thread(()-> {
-            var start = schedule[n];
-            var finish = schedule[n] + ITEMS_PER_THREAD;
-            for (int i = start; i < finish; i++) {
-                double x = A + i * H;
-                double s = func(x)*H;
-                acc.add(s); // блокировка также только при изменении суммы
+                acc.addToAcc(items[i]); // захват монитора, только при изменении суммы
             }
         });
     }
 
-    public static void measureP() throws InterruptedException {
+    // Atomic-вариант реализован с помощью DoubleAdder
+    public static Thread taskAtomicThread(int n, int[] schedule, double[] items, DoubleAdder acc){
+        return new Thread(()-> {
+            var start = schedule[n];
+            var finish = schedule[n] + ITEMS_PER_THREAD;
+            for (int i = start; i < finish; i++) {
+                acc.add(items[i]); // блокировка также только при изменении суммы
+            }
+        });
+    }
+
+    public static void measureP(double[] items) throws InterruptedException {
 
         var threadsStart = new int[THREADS];
 
@@ -63,12 +59,12 @@ public class Integral {
             threadsStart[i] = i * ITEMS_PER_THREAD;
         }
 
-        int[] results = new int[THREADS];
+        double[] results = new double[THREADS];
 
         var pStart = System.nanoTime();
 
         for (int i = 0; i < THREADS; i++) {
-            threads[i] = taskThread(i, threadsStart, results);
+            threads[i] = taskThread(i, threadsStart, items, results);
         }
 
         for (int i = 0; i < THREADS; i++)
@@ -83,12 +79,12 @@ public class Integral {
         }
         var pFinish = System.nanoTime();
         System.out.println("Parallel result");
-        System.out.println(pResult);
+        System.out.println(H * pResult);
         System.out.println("Parallel time (ms)");
         System.out.println((double)(pFinish - pStart)/1000000);
     }
 
-    public static void measureMon() throws InterruptedException {
+    public static void measureMon(double[] items) throws InterruptedException {
 
         var threadsStart = new int[THREADS];
 
@@ -98,12 +94,12 @@ public class Integral {
             threadsStart[i] = i * ITEMS_PER_THREAD;
         }
 
-        int[] results = new int[THREADS];
+        double[] results = new double[THREADS];
 
         var pStart = System.nanoTime();
         Acc acc = new Acc();
         for (int i = 0; i < THREADS; i++) {
-            threads[i] = taskMonitorThread(i, threadsStart, acc);
+            threads[i] = taskMonitorThread(i, threadsStart, items, acc);
         }
 
         for (int i = 0; i < THREADS; i++)
@@ -115,12 +111,12 @@ public class Integral {
         var pResult = acc.acc;
         var pFinish = System.nanoTime();
         System.out.println("Monitor result");
-        System.out.println(pResult);
+        System.out.println(H * pResult);
         System.out.println("Monitor time (ms)");
         System.out.println((double)(pFinish - pStart)/1000000);
     }
 
-    public static void measureAtomic() throws InterruptedException {
+    public static void measureAtomic(double[] items) throws InterruptedException {
 
         var threadsStart = new int[THREADS];
 
@@ -130,12 +126,12 @@ public class Integral {
             threadsStart[i] = i * ITEMS_PER_THREAD;
         }
 
-        int[] results = new int[THREADS];
+        double[] results = new double[THREADS];
 
         var pStart = System.nanoTime();
         var acc = new DoubleAdder();;
         for (int i = 0; i < THREADS; i++) {
-            threads[i] = taskAtomicThread(i, threadsStart, acc);
+            threads[i] = taskAtomicThread(i, threadsStart, items, acc);
         }
 
         for (int i = 0; i < THREADS; i++)
@@ -147,7 +143,7 @@ public class Integral {
         var pResult = acc.sum();
         var pFinish = System.nanoTime();
         System.out.println("Atomic result");
-        System.out.println(pResult);
+        System.out.println(H * pResult);
         System.out.println("Atomic time (ms)");
         System.out.println((double)(pFinish - pStart)/1000000);
     }
@@ -162,24 +158,30 @@ public class Integral {
             threadsStart[i] = i * ITEMS_PER_THREAD;
         }
 
+        double[] ls = new double[N];
+        for (int i = 0; i < N; i++) { // расчёт точек y
+            double x = A + i * H;
+            double y = func(x);
+            ls[i] = y;
+        }
+
+        double[] results = new double[THREADS];
+
         var start = System.nanoTime();
         // обыкновенное вычисление
         var acc = 0;
-        double x = A;
         for (int i = 0; i < N; i++) {
-            x = A + i * H;
-            double y = func(x);
-            acc += y;
+            acc += ls[i];
         }
         var finish = System.nanoTime();
 
         System.out.println("Sequential result");
-        System.out.println(acc);
+        System.out.println(H * acc);
         System.out.println("Sequential time (ms)");
         System.out.println((double)(finish - start)/1000000);
 
-        measureP();
-        measureAtomic();
-        measureMon();
+        measureP(ls);
+        measureAtomic(ls);
+        measureMon(ls);
     }
 }
