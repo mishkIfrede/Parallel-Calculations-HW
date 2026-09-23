@@ -1,8 +1,8 @@
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.DoubleAdder;
 
 public class Integral {
-    public static final int A = 10; // границы интегрируемого интервала
-    public static final int B = 20;
+    public static final double A = 10; // границы интегрируемого интервала
+    public static final double B = 20;
     public static final int N = 20; // количество разбиений (вместо SIZE)
     public static final double H = (B - A) / N; // шаг выполнения
     public static final int THREADS = 4;
@@ -36,18 +36,19 @@ public class Integral {
             for (int i = start; i < finish; i++) {
                 double x = A + i * H;
                 double y = func(x);
-                acc.addToAcc(y); // захват монитора, только при изменении суммы (??)
+                acc.addToAcc(y); // захват монитора, только при изменении суммы
             }
         });
     }
-    public static Thread taskAtomicThread(int n, int[] schedule, AtomicInteger acc){
+    // Atomic-вариант реализован с помощью DoubleAdder
+    public static Thread taskAtomicThread(int n, int[] schedule, DoubleAdder acc){
         return new Thread(()-> {
             var start = schedule[n];
             var finish = schedule[n] + ITEMS_PER_THREAD;
             for (int i = start; i < finish; i++) {
                 double x = A + i * H;
-                double y = func(x);
-                acc.addAndGet((int)y); // блокировка также только при изменении суммы (??)
+                double s = func(x)*H;
+                acc.add(s); // блокировка также только при изменении суммы
             }
         });
     }
@@ -132,7 +133,7 @@ public class Integral {
         int[] results = new int[THREADS];
 
         var pStart = System.nanoTime();
-        var acc = new AtomicInteger(0);
+        var acc = new DoubleAdder();;
         for (int i = 0; i < THREADS; i++) {
             threads[i] = taskAtomicThread(i, threadsStart, acc);
         }
@@ -143,7 +144,7 @@ public class Integral {
         for (int i = 0; i < THREADS; i++)
             threads[i].join();
 
-        var pResult = acc.get();
+        var pResult = acc.sum();
         var pFinish = System.nanoTime();
         System.out.println("Atomic result");
         System.out.println(pResult);
