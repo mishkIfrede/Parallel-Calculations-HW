@@ -83,6 +83,16 @@ java MutexWorkshop.java demo 1000). Код модели ожидания уже 
 Sleep здесь моделирует задержку разрешения, например ожидание I/O владельцем.
 Он намеренно используется координатором, а не как реализация lock().
 
+Вот пример одного из запусков при аргументе "deo 1000":
+Один ожидающий поток; разрешение продолжить через 1000 ms.
+spin: wall=1008,16 ms, CPU=1000,00 ms
+park: wall=1002,31 ms, CPU=0,00 ms
+spin: wall=1003,56 ms, CPU=984,38 ms
+park: wall=1004,61 ms, CPU=0,00 ms
+Сравните расход CPU, не небольшие различия wall time.
+
+Process finished with exit code 0
+
 
 ШАГ 4. ОДИН ОЖИДАЮЩИЙ — класс OneWaiterMutex
 Это намеренно ограниченный промежуточный протокол: не более двух потоков-клиентов
@@ -187,50 +197,89 @@ public class MutexWorkshop {
             }
         }
     }
-//    ШАГ 4. ОДИН ОЖИДАЮЩИЙ — класс OneWaiterMutex
-//    Это намеренно ограниченный промежуточный протокол: не более двух потоков-клиентов
-//    одновременно, значит владелец и максимум один ожидающий. Реентерабельности нет.
-//    Используйте owner и один атомарный слот waiter. Повторный lock владельца — ошибка.
-//
-//            LockSupport.park(blocker) может приостановить текущий поток; blocker — объект для
-//    диагностики, передавайте this. unpark(thread) выдаёт указанному потоку разрешение.
-//    Если unpark случился раньше park, следующий park использует разрешение без сна.
-//    Разрешение максимум одно: несколько unpark не накапливаются как у семафора.
-//    park может вернуться без освобождения замка, в том числе после interrupt.
-//    Поэтому после возврата СНОВА проверяйте возможность CAS-захвата в цикле.
-//    Само пробуждение НЕ передаёт владение! Оно лишь позволяет снова попытаться.
-//
-//    Порядок действий: попытка захвата; регистрация ожидающего; повторная проверка
-//    захвата после регистрации; затем park в цикле. После захвата удалите свою регистрацию.
-//    Освобождающий сначала освобождает owner и затем будит зарегистрированного ожидающего.
-//    Подумайте над двумя случаями: освобождение до регистрации и после неё.
-//    Почему нельзя просто сделать неудачный CAS -> park без регистрации и перепроверки?
-//    Слот очищайте условно (CAS с собой), чтобы не удалить чужую регистрацию.
-//    При interrupt запомните и очистите статус через Thread.interrupted(), продолжайте
-//    ожидать, а после успешного захвата восстановите Thread.currentThread().interrupt().
-//    Иначе park может немедленно возвращаться снова и снова, расходуя CPU.
-//    Запустите parked. Кроме двухпоточного счётчика есть проверка прерывания ожидающего.
+
+    // OneWaiter - тест показывает ошибку "only one waiter is allowed" в CounterTest - это логично из условий самого мютекса
     static final class OneWaiterMutex implements Mutex {
         private final AtomicReference<Thread> owner = new AtomicReference<>();
         private final AtomicReference<Thread> waiter = new AtomicReference<>();
         public void lock() {
-            throw todo(4);
-//            Thread current = Thread.currentThread();
-//            while (!owner.compareAndSet(null, current)) {
-//                waiter.set(current);
-//
-//            }
+            // throw todo(4);
+            Thread current = Thread.currentThread();
+            if (owner.compareAndSet(null, current)) { return; } // попытка захвата
+            if (owner.get() == current) { // проверка на реентерабельность
+                throw new IllegalStateException("Error: reentrant lock is not allowed");
+            }
+            if (!waiter.compareAndSet(null, current)) { // проверка на второго ожидающего
+                throw new IllegalStateException("only one waiter is allowed");
+            }
+            boolean interrupted = false; // флаг прерывания потока
+            try {
+                for (;;) {
+                    if (owner.compareAndSet(null, current)) { // повторная попытка CASa
+                        break;
+                    }
+                    LockSupport.park(this);
+                    if (Thread.interrupted()) {
+                        interrupted = true; // при прерывании потока меняем флаг, но не выходим
+                    }
+                }
+            } finally {
+                waiter.compareAndSet(current, null); // удаление регистрации
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
         public void unlock() {
-            throw todo(4);
+            // throw todo(4);
+            Thread current = Thread.currentThread();
+            if (!owner.compareAndSet(current, null)) { // проверка на владельца - только он может освободить поток
+                throw new IllegalMonitorStateException("unlock by non-owner");
+            }
+            Thread w = waiter.get();
+            if (w != null) { // освобождаем ожидающего
+                LockSupport.unpark(w);
+            }
         }
     }
 
+// QueuedMutex - успешно прошёл все тесты
     static final class QueuedMutex implements Mutex {
         private final AtomicReference<Thread> owner = new AtomicReference<>();
         private final ConcurrentLinkedQueue<Thread> waiters = new ConcurrentLinkedQueue<>();
-        public void lock() { throw todo(5); }
-        public void unlock() { throw todo(5); }
+        public void lock() {
+            // throw todo(5);
+            Thread current = Thread.currentThread();
+            if (owner.get() == current) { // проверка на реентерабельность
+                throw new IllegalStateException("reentrant lock is not allowed");
+            }
+            waiters.add(current); // регистрацияя претендента
+            boolean interrupted = false; // флаг прерывания потока
+            for (;;) { // захватить CAS может только голова очереди
+                if (waiters.peek() == current && owner.compareAndSet(null, current)) {
+                    waiters.poll(); // удаление записи из головы
+                    break;
+                }
+                LockSupport.park(this);
+                if (Thread.interrupted()) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        public void unlock() {
+            // throw todo(5);
+            Thread current = Thread.currentThread();
+            if (!owner.compareAndSet(current, null)) {
+                throw new IllegalMonitorStateException("unlock by non-owner");
+            }
+            Thread head = waiters.peek(); // достаём голову или null
+            if (head != null) {
+                LockSupport.unpark(head);
+            }
+        }
     }
 
     private static UnsupportedOperationException todo(int step) {
